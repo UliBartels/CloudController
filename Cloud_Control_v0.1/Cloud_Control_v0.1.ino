@@ -13,31 +13,40 @@
 #define DATA_PIN 5 
 CRGB leds[NUM_LEDS];
 
+int new_ADC_val;
+
 volatile int pot_slider_val;
 volatile int pot_R_val;
 volatile int pot_L_val;
 
+volatile uint8_t A_val;
+volatile uint8_t B_val;
+volatile uint8_t C_val;
+
 ISR(ADC_vect){
   cli();
+
+  new_ADC_val = ADCL | (ADCH << 8); //Read conversion result
+  new_ADC_val >>= 2; //Drop lowest two bits to reduce noise
 
   uint8_t current_MUX_setting = 0b0001111 & ADMUX; //Read out MUX[3:0] by masking ADMUX.
   switch(current_MUX_setting)
   {
     case(0): //This means we've just read ADC0 i.e. Left Potentiometer
-    pot_L_val = ADCL | (ADCH << 8); //Read conversion result
+    if( abs(new_ADC_val - pot_L_val) > 2) pot_L_val = new_ADC_val;
     ADMUX |= (1 << MUX0); //Set MUX to ADC1
     ADCSRA |= (1 << ADSC); //ADC start conversion
     break;
     
     case(1): //This means we've just read ADC1 i.e. Right Potentiometer
-    pot_R_val = ADCL | (ADCH << 8); //Read conversion result
+    if( abs(new_ADC_val - pot_R_val) > 2) pot_R_val = new_ADC_val;
     ADMUX |= (1 << MUX1); //Set MUX to ADC2
     ADMUX &= ~(1 << MUX0);
     ADCSRA |= (1 << ADSC); //ADC start conversion
     break;
     
     case(2): //This means we've just read ADC2 i.e. Slide Potentiometer
-    pot_slider_val = ADCL | (ADCH << 8);
+    if( abs(new_ADC_val - pot_slider_val) > 2) pot_slider_val = new_ADC_val;
     //No further conversions after this one. Next one will be kicked off again by Timer1
     break;
   }
@@ -62,17 +71,17 @@ ISR(PCINT2_vect){
   changed_pins = cur_state ^ prev_state;
   if( !( cur_state & (1 << PD0) ) && changed_pins & (1 << PD0) )
   {
-    Serial.println("You pushed Button A");
+    A_val++;
   }
   
   if( !( cur_state & (1 << PD4) ) && changed_pins & (1 << PD4) )
   {
-    Serial.println("You pushed Button B");
+    B_val++;
   }
 
   if( !( cur_state & (1 << PD7) ) && changed_pins & (1 << PD7) )
   {
-    Serial.println("You pushed Button C");
+    C_val++;
   }
   prev_state = cur_state;
 
@@ -125,15 +134,47 @@ void setup() {
 
 }
 
-void loop() {
-  int pos = map(pot_slider_val, 0, 1023, 0, 194);
+uint8_t speed_change_glitch_offset;
+uint8_t old_speed_val;
+uint8_t hue_val;
+uint8_t pos_offset;
+
+void sweep(){
+  
+  if(A_val % 2){
+    pos_offset = pot_slider_val;
+  } else {
+    hue_val = pot_slider_val;
+  }
+  
+  uint8_t new_speed_val = map(pot_R_val, 0, 255, 0, 160);
+  uint8_t pos = beatsin8(old_speed_val, 0, NUM_LEDS, 0, pos_offset+speed_change_glitch_offset);
+
+  //When changing the speed the new position glitches by a considerable amount.
+  //This loop generates an offset called speed_change_glitch_offset that masks this jump.
+  if( new_speed_val - old_speed_val != 0){
+    for(int i = 0; i < NUM_LEDS; i++){
+      uint8_t test_pos = beatsin8(new_speed_val, 0, NUM_LEDS, 0, pos_offset+i);
+      if( test_pos == pos ){
+        speed_change_glitch_offset = i;
+        old_speed_val = new_speed_val;
+        exit;
+      }
+    }
+  }
+
   for( int i = 0; i < NUM_LEDS; i++) {
       if(abs(i - pos) < 11){
-        leds[i] = CHSV(map(pot_slider_val,0,1023,0,255),255,255);
+        leds[i] = CHSV(hue_val,255,255);
       }else{
         leds[i] = CRGB::Black;
       }
   }
+}
+
+void loop() {
+
+  sweep();
   FastLED.show();
   FastLED.delay(1000/40);
 }
