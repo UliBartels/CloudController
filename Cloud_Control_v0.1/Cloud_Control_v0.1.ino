@@ -9,9 +9,12 @@
  * PC0 = Left Pot
  ***********************/
 #include <FastLED.h>
+FASTLED_USING_NAMESPACE
+
 #define NUM_LEDS 194
-#define DATA_PIN 5 
-CRGB leds[NUM_LEDS];
+#define DATA_PIN 5
+
+CRGB led_string[NUM_LEDS];
 
 int new_ADC_val;
 
@@ -19,9 +22,75 @@ volatile int pot_slider_val;
 volatile int pot_R_val;
 volatile int pot_L_val;
 
-volatile uint8_t A_val;
+volatile uint8_t gCurrentPattern;
 volatile uint8_t B_val;
 volatile uint8_t C_val;
+
+uint8_t speed_change_glitch_offset;
+uint8_t old_speed_val;
+uint8_t hue_val;
+uint8_t pos_offset;
+
+uint8_t timer_counter;
+bool fire_animation;
+
+void sweep(){
+  
+  if(B_val % 2){
+    pos_offset = pot_slider_val;
+  } else {
+    hue_val = pot_slider_val;
+  }
+  
+  uint8_t new_speed_val = map(pot_R_val, 0, 255, 0, 160);
+  uint8_t pos = beatsin8(old_speed_val, 0, NUM_LEDS, 0, pos_offset+speed_change_glitch_offset);
+
+  //When changing the speed the new position glitches by a considerable amount.
+  //This loop generates an offset called speed_change_glitch_offset that masks this jump.
+  if( new_speed_val - old_speed_val != 0){
+    for(int i = 0; i < NUM_LEDS; i++){
+      uint8_t test_pos = beatsin8(new_speed_val, 0, NUM_LEDS, 0, pos_offset+i);
+      if( test_pos == pos ){
+        speed_change_glitch_offset = i;
+        old_speed_val = new_speed_val;
+        exit;
+      }
+    }
+  }
+
+  for( int i = 0; i < NUM_LEDS; i++) {
+      if(abs(i - pos) < 11){
+        led_string[i] = CHSV(hue_val,255,255);
+      }else{
+        led_string[i] = CRGB::Black;
+      }
+  }
+}
+
+void random_lightning(){
+  if(fire_animation or timer_counter % map(pot_R_val, 1, 255, 1, 40) == 0){
+    int pos = random16(NUM_LEDS-22) + 22;
+    CHSV color = CHSV(pot_slider_val + random8(64), 200, 255);
+
+    //Set a few LEDs to that color. The -20, -21 and -22 I hoped would be one row over but they aren't. Still looks cool though.
+    led_string[pos] = led_string[pos-1] = led_string[pos-2] = led_string[pos-4] = led_string[pos-5] += color;
+    led_string[pos-20] = led_string[pos-21] = led_string[pos-22] += color;
+
+    fire_animation = 0;
+  }
+  fadeToBlackBy( led_string , NUM_LEDS, map(pot_L_val, 1, 255, 0, 40) );
+}
+
+void rainbow(){
+  if(timer_counter % 2 == 1){
+    hue_val = hue_val + map(pot_R_val, 1, 255, 2, 60);
+  }
+  fill_rainbow( led_string, NUM_LEDS, hue_val , map(pot_L_val, 5, 255, 0, 255));
+}
+
+typedef void (*AnimationList[])();
+AnimationList gAnimations = {sweep, random_lightning, rainbow};
+#define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
 
 ISR(ADC_vect){
   cli();
@@ -57,8 +126,16 @@ ISR(ADC_vect){
 ISR(TIMER1_COMPA_vect){
   cli();
 
-  ADMUX &= 0b11110000; //Clear MUX[3:0] to set first conversion to ADC0 
-  ADCSRA |= (1 << ADSC); //ADC start conversion
+  //Instead of just using the timer every 100ms to fire off the ADC I want to use it to fire off animations every n milliseconds.
+  //To accomplish this I am incrementing this counter every millisecond and then using this counter in animations to know when to fire an effect.
+  timer_counter++;
+
+  //Fire off ADC conversion every ~100ms. Not gonna be 100% accurate as the timer will go 200->255->0->100, so 155ms every three ticks but it won't matter.
+  if(timer_counter % 100 == 0){
+    ADMUX &= 0b11110000; //Clear MUX[3:0] to set first conversion to ADC0 
+    ADCSRA |= (1 << ADSC); //ADC start conversion
+  }
+
   
   sei();
 }
@@ -71,7 +148,7 @@ ISR(PCINT2_vect){
   changed_pins = cur_state ^ prev_state;
   if( !( cur_state & (1 << PD0) ) && changed_pins & (1 << PD0) )
   {
-    A_val++;
+    gCurrentPattern = gCurrentPattern + 1 % ARRAY_SIZE(gAnimations);
   }
   
   if( !( cur_state & (1 << PD4) ) && changed_pins & (1 << PD4) )
@@ -112,7 +189,7 @@ void setup() {
   //f_OC1A = f_clkIO/( prescaler * ( 1 + OCR1A ) ) Page 132
   //f_clkIO = 16MHz on Arduino Genuino
   TCCR1A = TCCR1B = 0;
-  OCR1A = 12499; //Setting timer to fire every 100ms.
+  OCR1A = 124; //Setting timer to fire every 1ms.
   TCCR1B = (1 << WGM12) | (1 << CS11) | (1 << CS10);
 
   TCNT1 = 0;
@@ -127,54 +204,18 @@ void setup() {
   PCICR = (1 << PCIE2); //PCIE2 is the interrupt enable for PCINT[23:16]
   //END BUTTON SETUP
 
-  FastLED.addLeds<WS2812B, DATA_PIN, GRB>(leds, NUM_LEDS);
-  FastLED.setBrightness(50);
+  FastLED.addLeds<WS2812B, DATA_PIN, GRB>(led_string, NUM_LEDS);
+  FastLED.setMaxPowerInVoltsAndMilliamps(5,1000); 
+  FastLED.setBrightness(90);
+
+  hue_val = 100;
   
   sei();
 
 }
 
-uint8_t speed_change_glitch_offset;
-uint8_t old_speed_val;
-uint8_t hue_val;
-uint8_t pos_offset;
-
-void sweep(){
-  
-  if(A_val % 2){
-    pos_offset = pot_slider_val;
-  } else {
-    hue_val = pot_slider_val;
-  }
-  
-  uint8_t new_speed_val = map(pot_R_val, 0, 255, 0, 160);
-  uint8_t pos = beatsin8(old_speed_val, 0, NUM_LEDS, 0, pos_offset+speed_change_glitch_offset);
-
-  //When changing the speed the new position glitches by a considerable amount.
-  //This loop generates an offset called speed_change_glitch_offset that masks this jump.
-  if( new_speed_val - old_speed_val != 0){
-    for(int i = 0; i < NUM_LEDS; i++){
-      uint8_t test_pos = beatsin8(new_speed_val, 0, NUM_LEDS, 0, pos_offset+i);
-      if( test_pos == pos ){
-        speed_change_glitch_offset = i;
-        old_speed_val = new_speed_val;
-        exit;
-      }
-    }
-  }
-
-  for( int i = 0; i < NUM_LEDS; i++) {
-      if(abs(i - pos) < 11){
-        leds[i] = CHSV(hue_val,255,255);
-      }else{
-        leds[i] = CRGB::Black;
-      }
-  }
-}
-
 void loop() {
-
-  sweep();
+  gAnimations[gCurrentPattern]();
   FastLED.show();
-  FastLED.delay(1000/40);
+  FastLED.delay(1000/100);
 }
