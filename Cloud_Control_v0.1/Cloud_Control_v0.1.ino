@@ -36,15 +36,9 @@ bool fire_animation;
 
 void sweep(){
   
-  if(B_val % 2){
-    pos_offset = pot_slider_val;
-  } else {
-    hue_val = pot_slider_val;
-  }
-  
   uint8_t new_speed_val = map(pot_R_val, 0, 255, 0, 160);
-  uint8_t pos = beatsin8(old_speed_val, 0, NUM_LEDS, 0, pos_offset+speed_change_glitch_offset);
-
+  uint8_t pos = beatsin8(old_speed_val, 0, NUM_LEDS, 0, speed_change_glitch_offset);
+  
   //When changing the speed the new position glitches by a considerable amount.
   //This loop generates an offset called speed_change_glitch_offset that masks this jump.
   if( new_speed_val - old_speed_val != 0){
@@ -59,12 +53,11 @@ void sweep(){
   }
 
   for( int i = 0; i < NUM_LEDS; i++) {
-      if(abs(i - pos) < 11){
+      if(abs(i - pos) < map(pot_slider_val,0,255,1,NUM_LEDS) ){
         led_string[i] = CHSV(hue_val,255,255);
-      }else{
-        led_string[i] = CRGB::Black;
       }
   }
+  fadeToBlackBy( led_string , NUM_LEDS, map(pot_L_val, 0, 255, 0, 40) );
 }
 
 void random_lightning(){
@@ -85,7 +78,7 @@ void rainbow(){
   if(timer_counter % 2 == 1){
     hue_val = hue_val + map(pot_R_val, 1, 255, 2, 60);
   }
-  fill_rainbow( led_string, NUM_LEDS, hue_val , map(pot_L_val, 5, 255, 0, 255));
+  fill_rainbow( led_string, NUM_LEDS, hue_val , 1);
 }
 
 typedef void (*AnimationList[])();
@@ -145,7 +138,11 @@ ISR(PCINT2_vect){
   cli();
 
   cur_state = PIND;
+
+  //Checks current state against previous state to find out which pins have changed.
   changed_pins = cur_state ^ prev_state;
+
+  //If PD0 is 1 and PD0 is part of the changed pins
   if( !( cur_state & (1 << PD0) ) && changed_pins & (1 << PD0) )
   {
     gCurrentPattern = gCurrentPattern + 1 % ARRAY_SIZE(gAnimations);
@@ -206,7 +203,7 @@ void setup() {
 
   FastLED.addLeds<WS2812B, DATA_PIN, GRB>(led_string, NUM_LEDS);
   FastLED.setMaxPowerInVoltsAndMilliamps(5,1000); 
-  FastLED.setBrightness(90);
+  FastLED.setBrightness(20);
 
   hue_val = 100;
   
